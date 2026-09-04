@@ -25,10 +25,11 @@ export const App = () => {
       <div className="flex min-h-svh w-full p-0">
         <section className="relative h-svh w-full overflow-hidden bg-(--deck-bg) shadow-[0_40px_100px_-20px_rgba(0,0,0,.7),0_0_0_1px_rgba(255,255,255,.06)]">
           <div className="pointer-events-none absolute -inset-12 z-0 bg-[radial-gradient(circle_at_30%_15%,color-mix(in_oklab,var(--deck-accent)_22%,transparent),transparent_45%),radial-gradient(circle_at_80%_85%,color-mix(in_oklab,var(--deck-accent)_16%,transparent),transparent_45%),radial-gradient(circle_at_20%_80%,color-mix(in_oklab,var(--deck-accent)_8%,transparent),transparent_50%)]" />
-          <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(ellipse_100%_60%_at_50%_0%,rgba(255,255,255,0.025),transparent)]" />
+          <div className="pointer-events-none absolute inset-0 z-0 opacity-60 [background-image:linear-gradient(rgba(255,255,255,.018)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.018)_1px,transparent_1px)] [background-size:44px_44px] [mask-image:linear-gradient(to_bottom,black,transparent_72%)]" />
+          <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(ellipse_100%_60%_at_50%_0%,rgba(255,255,255,0.03),transparent)]" />
           <div className="relative z-10 flex h-full flex-col">
             <TopBar status={session.status} currentGame={library.currentGame} runningTrainer={trainer.activeTrainer} onOpenSettings={shell.openSettings} />
-            <div className="remote-scrollbar-hidden min-h-0 flex-1 overflow-y-auto overscroll-contain px-3.5 pb-27.5" onScroll={shell.onScroll}>
+            <div className="remote-scrollbar-hidden remote-content-enter min-h-0 flex-1 overflow-y-auto overscroll-contain px-3.5 pb-27.5" onScroll={shell.onScroll}>
               {!session.connected || !trainer.activeTrainer ? (
                 <SessionPlaceholder
                   connected={session.connected}
