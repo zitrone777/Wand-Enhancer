@@ -37,3 +37,4 @@ jobs:
           if-no-files-found: error
 
       # Trigger a build for compatibility changes made directly on master.
+      # PE hardening updater validates and commits the architecture-aware parser.
