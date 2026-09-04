@@ -1,0 +1,235 @@
+name: Apply PE compatibility hardening
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  harden-pe-parser:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Harden automatic PE detection
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          path = Path('WandEnhancer/Core/Enhancer.cs')
+          text = path.read_text(encoding='utf-8-sig')
+
+          start = text.index('        private void EnsureProxyDllLoadable(string exePath)')
+          end = text.index('\n        }', start) + len('\n        }')
+
+          replacement = r'''        private void EnsureProxyDllLoadable(string exePath)
+        {
+            const ushort LoadLibrarySearchSystem32 = 0x0800;
+            const int LoadConfigDirectoryIndex = 10;
+            const ushort Pe32Magic = 0x10B;
+            const ushort Pe32PlusMagic = 0x20B;
+            const int FileHeaderSize = 20;
+            const int SectionHeaderSize = 40;
+            const int DataDirectoryCountOffsetPe32 = 92;
+            const int DataDirectoryCountOffsetPe32Plus = 108;
+            const int DataDirectoryOffsetPe32 = 96;
+            const int DataDirectoryOffsetPe32Plus = 112;
+            const int DependentLoadFlagsOffsetPe32 = 0x36;
+            const int DependentLoadFlagsOffsetPe32Plus = 0x4E;
+            const int MinimumLoadConfigSizePe32 = DependentLoadFlagsOffsetPe32 + sizeof(ushort);
+            const int MinimumLoadConfigSizePe32Plus = DependentLoadFlagsOffsetPe32Plus + sizeof(ushort);
+
+            if (!File.Exists(exePath))
+            {
+                _logger("[ENHANCER] Executable not found; skipping DLL search-order fix", ELogType.Warn);
+                return;
+            }
+
+            try
+            {
+                byte[] pe = File.ReadAllBytes(exePath);
+                if (pe.Length < 64 || pe[0] != (byte)'M' || pe[1] != (byte)'Z')
+                {
+                    _logger("[ENHANCER] Invalid DOS header; skipping DLL search-order fix", ELogType.Warn);
+                    return;
+                }
+
+                int peHeader = BitConverter.ToInt32(pe, 0x3C);
+                if (peHeader < 0 || peHeader > pe.Length - 4 ||
+                    pe[peHeader] != (byte)'P' || pe[peHeader + 1] != (byte)'E' ||
+                    pe[peHeader + 2] != 0 || pe[peHeader + 3] != 0)
+                {
+                    _logger("[ENHANCER] Invalid PE signature; skipping DLL search-order fix", ELogType.Warn);
+                    return;
+                }
+
+                if (peHeader > pe.Length - 24)
+                {
+                    _logger("[ENHANCER] Truncated PE header; skipping DLL search-order fix", ELogType.Warn);
+                    return;
+                }
+
+                ushort numberOfSections = BitConverter.ToUInt16(pe, peHeader + 6);
+                ushort sizeOfOptionalHeader = BitConverter.ToUInt16(pe, peHeader + 20);
+                int optionalHeader = peHeader + FileHeaderSize;
+                if (sizeOfOptionalHeader < 2 || optionalHeader > pe.Length - sizeOfOptionalHeader)
+                {
+                    _logger("[ENHANCER] Invalid PE optional header; skipping DLL search-order fix", ELogType.Warn);
+                    return;
+                }
+
+                ushort optionalMagic = BitConverter.ToUInt16(pe, optionalHeader);
+                bool isPe32Plus;
+                int dataDirectoryCountOffset;
+                int dataDirectories;
+                int dependentLoadFlagsOffset;
+                int minimumLoadConfigSize;
+
+                if (optionalMagic == Pe32PlusMagic)
+                {
+                    isPe32Plus = true;
+                    dataDirectoryCountOffset = DataDirectoryCountOffsetPe32Plus;
+                    dataDirectories = DataDirectoryOffsetPe32Plus;
+                    dependentLoadFlagsOffset = DependentLoadFlagsOffsetPe32Plus;
+                    minimumLoadConfigSize = MinimumLoadConfigSizePe32Plus;
+                }
+                else if (optionalMagic == Pe32Magic)
+                {
+                    isPe32Plus = false;
+                    dataDirectoryCountOffset = DataDirectoryCountOffsetPe32;
+                    dataDirectories = DataDirectoryOffsetPe32;
+                    dependentLoadFlagsOffset = DependentLoadFlagsOffsetPe32;
+                    minimumLoadConfigSize = MinimumLoadConfigSizePe32;
+                }
+                else
+                {
+                    _logger($"[ENHANCER] Unsupported PE optional-header magic 0x{optionalMagic:X}; skipping DLL search-order fix", ELogType.Warn);
+                    return;
+                }
+
+                int optionalEnd = optionalHeader + sizeOfOptionalHeader;
+                if (dataDirectoryCountOffset + sizeof(uint) > sizeOfOptionalHeader ||
+                    dataDirectoryCountOffset + sizeof(uint) > pe.Length - optionalHeader)
+                {
+                    _logger("[ENHANCER] PE optional header is too small for data-directory metadata; skipping DLL search-order fix", ELogType.Warn);
+                    return;
+                }
+
+                uint numberOfRvaAndSizes = BitConverter.ToUInt32(pe, optionalHeader + dataDirectoryCountOffset);
+                if (numberOfRvaAndSizes <= LoadConfigDirectoryIndex)
+                {
+                    _logger("[ENHANCER] PE has no Load Config directory entry; skipping DLL search-order fix", ELogType.Info);
+                    return;
+                }
+
+                int loadConfigDirectory = dataDirectories + LoadConfigDirectoryIndex * 8;
+                if (loadConfigDirectory < 0 || loadConfigDirectory + 8 > sizeOfOptionalHeader ||
+                    loadConfigDirectory + 8 > pe.Length - optionalHeader)
+                {
+                    _logger("[ENHANCER] Load Config data-directory entry is outside the PE header; skipping DLL search-order fix", ELogType.Warn);
+                    return;
+                }
+
+                uint loadConfigRva = BitConverter.ToUInt32(pe, optionalHeader + loadConfigDirectory);
+                uint loadConfigSize = BitConverter.ToUInt32(pe, optionalHeader + loadConfigDirectory + 4);
+                if (loadConfigRva == 0 || loadConfigSize == 0)
+                {
+                    _logger("[ENHANCER] No Load Config directory; skipping DLL search-order fix", ELogType.Info);
+                    return;
+                }
+
+                int sectionTable = optionalEnd;
+                long sectionTableEnd = (long)sectionTable + (long)numberOfSections * SectionHeaderSize;
+                if (sectionTable < 0 || sectionTableEnd > pe.Length)
+                {
+                    _logger("[ENHANCER] Invalid PE section table; skipping DLL search-order fix", ELogType.Warn);
+                    return;
+                }
+
+                int loadConfigOffset = -1;
+                for (int i = 0; i < numberOfSections; i++)
+                {
+                    int section = sectionTable + i * SectionHeaderSize;
+                    uint virtualSize = BitConverter.ToUInt32(pe, section + 8);
+                    uint virtualAddress = BitConverter.ToUInt32(pe, section + 12);
+                    uint rawSize = BitConverter.ToUInt32(pe, section + 16);
+                    uint rawPointer = BitConverter.ToUInt32(pe, section + 20);
+
+                    ulong sectionVirtualEnd = (ulong)virtualAddress + Math.Max(virtualSize, rawSize);
+                    ulong rva = loadConfigRva;
+                    if (rva < virtualAddress || rva >= sectionVirtualEnd || rawSize == 0 || rva - virtualAddress >= rawSize)
+                    {
+                        continue;
+                    }
+
+                    ulong rawOffset = (ulong)rawPointer + (rva - virtualAddress);
+                    if (rawOffset > int.MaxValue || rawOffset >= (ulong)pe.Length)
+                    {
+                        continue;
+                    }
+
+                    loadConfigOffset = (int)rawOffset;
+                    break;
+                }
+
+                if (loadConfigOffset < 0 || loadConfigOffset > pe.Length - sizeof(uint))
+                {
+                    _logger("[ENHANCER] Could not map Load Config directory; skipping DLL search-order fix", ELogType.Warn);
+                    return;
+                }
+
+                uint declaredLoadConfigSize = BitConverter.ToUInt32(pe, loadConfigOffset);
+                ulong availableLoadConfigBytes = Math.Min((ulong)declaredLoadConfigSize, (ulong)loadConfigSize);
+                if (availableLoadConfigBytes < (ulong)minimumLoadConfigSize ||
+                    dependentLoadFlagsOffset + sizeof(ushort) > availableLoadConfigBytes ||
+                    loadConfigOffset > pe.Length - dependentLoadFlagsOffset - sizeof(ushort))
+                {
+                    _logger($"[ENHANCER] Load Config structure is too small for DependentLoadFlags (PE32+={isPe32Plus}); skipping DLL search-order fix", ELogType.Info);
+                    return;
+                }
+
+                int flagsOffset = loadConfigOffset + dependentLoadFlagsOffset;
+                ushort flags = BitConverter.ToUInt16(pe, flagsOffset);
+                if ((flags & LoadLibrarySearchSystem32) == 0)
+                {
+                    _logger("[ENHANCER] Proxy DLL search-order already compatible; no PE patch needed", ELogType.Info);
+                    return;
+                }
+
+                ushort patched = (ushort)(flags & ~LoadLibrarySearchSystem32);
+                pe[flagsOffset] = (byte)(patched & 0xFF);
+                pe[flagsOffset + 1] = (byte)(patched >> 8);
+                File.WriteAllBytes(exePath, pe);
+
+                _logger(
+                    $"[ENHANCER] Cleared LOAD_LIBRARY_SEARCH_SYSTEM32 in {Path.GetFileName(exePath)} " +
+                    $"(PE32+={isPe32Plus}, DependentLoadFlags 0x{flags:X4} -> 0x{patched:X4}) so the proxy DLL can load",
+                    ELogType.Success);
+            }
+            catch (Exception ex)
+            {
+                _logger($"[ENHANCER] PE compatibility check failed safely: {ex.Message}", ELogType.Warn);
+            }
+        }'''
+
+          text = text[:start] + replacement + text[end:]
+          path.write_text(text, encoding='utf-8-sig')
+
+      - name: Commit hardening and remove temporary updater
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add WandEnhancer/Core/Enhancer.cs .github/workflows/compatibility-upgrade.yml
+          git rm .github/workflows/compatibility-upgrade.yml
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "fix: auto-detect PE architecture for Wand compatibility"
+          git push
