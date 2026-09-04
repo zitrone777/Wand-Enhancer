@@ -20,13 +20,12 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
-          import re
 
           path = Path('WandEnhancer/Core/Enhancer.cs')
           text = path.read_text(encoding='utf-8-sig')
 
           start = text.index('        private void EnsureProxyDllLoadable(string exePath)')
-          end = text.index('\n        }', start) + len('\n        }')
+          end = text.index('        public void Patch()', start)
 
           replacement = r'''        private void EnsureProxyDllLoadable(string exePath)
         {
@@ -114,8 +113,7 @@ jobs:
                 }
 
                 int optionalEnd = optionalHeader + sizeOfOptionalHeader;
-                if (dataDirectoryCountOffset + sizeof(uint) > sizeOfOptionalHeader ||
-                    dataDirectoryCountOffset + sizeof(uint) > pe.Length - optionalHeader)
+                if (dataDirectoryCountOffset + sizeof(uint) > sizeOfOptionalHeader)
                 {
                     _logger("[ENHANCER] PE optional header is too small for data-directory metadata; skipping DLL search-order fix", ELogType.Warn);
                     return;
@@ -129,8 +127,7 @@ jobs:
                 }
 
                 int loadConfigDirectory = dataDirectories + LoadConfigDirectoryIndex * 8;
-                if (loadConfigDirectory < 0 || loadConfigDirectory + 8 > sizeOfOptionalHeader ||
-                    loadConfigDirectory + 8 > pe.Length - optionalHeader)
+                if (loadConfigDirectory < 0 || loadConfigDirectory + 8 > sizeOfOptionalHeader)
                 {
                     _logger("[ENHANCER] Load Config data-directory entry is outside the PE header; skipping DLL search-order fix", ELogType.Warn);
                     return;
@@ -216,7 +213,9 @@ jobs:
             {
                 _logger($"[ENHANCER] PE compatibility check failed safely: {ex.Message}", ELogType.Warn);
             }
-        }'''
+        }
+
+'''
 
           text = text[:start] + replacement + text[end:]
           path.write_text(text, encoding='utf-8-sig')
@@ -226,7 +225,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add WandEnhancer/Core/Enhancer.cs .github/workflows/compatibility-upgrade.yml
+          git add WandEnhancer/Core/Enhancer.cs
           git rm .github/workflows/compatibility-upgrade.yml
           if git diff --cached --quiet; then
             exit 0
